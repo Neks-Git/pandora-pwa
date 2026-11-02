@@ -102,7 +102,37 @@ async function decryptVault(bytes, password) {
   if (!vault || !Array.isArray(vault.entries)) throw new Error('vault is malformed');
   return vault;
 }
+async function fetchVaultFromRelay(id, token, expectedHash) {
+  const relayBase = document.querySelector('meta[name="pandora-relay"]')?.content || '';
+  if (!relayBase) {
+    $('#app').innerHTML = '<div class="card"><div class="err">This PWA has no relay configured. Set the meta tag in index.html.</div></div>';
+    return;
+  }
 
+  $('#app').innerHTML =
+    '<div class="card"><div class="caps">Fetching vault</div>' +
+    '<div id="status" class="hint"><span class="spinner"></span> Downloading encrypted vault…</div>' +
+    '<div id="err" class="err"></div></div>';
+  try {
+    const res = await fetch(relayBase + '/fetch/' + encodeURIComponent(id), {
+      headers: { 'X-Pandora-Token': token },
+    });
+    if (!res.ok) throw new Error('relay returned ' + res.status);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (expectedHash) {
+      const digest = await crypto.subtle.digest('SHA-256', buf);
+      const got = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+      if (got !== expectedHash) throw new Error('vault hash mismatch — connection may have been tampered with');
+    }
+    state.vaultBytes = buf;
+    saveVaultToCache(buf);
+    history.replaceState(null, '', window.location.pathname);
+    renderPassword();
+  } catch (e) {
+    $('#status').textContent = 'Failed.';
+    $('#err').textContent = e.message;
+  }
+}
 async function boot() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -111,9 +141,12 @@ async function boot() {
   const token = h.get('t');
   const hash  = h.get('h');
   const pc    = h.get('pc');
-  if (token) {
-    const base = pc ? `https://${pc}` : '';
-    await fetchVault(base + '/vault?t=' + encodeURIComponent(token), hash);
+  const relay = h.get('r');    // NEW: relay id
+
+  if (relay && token) {
+    await fetchVaultFromRelay(relay, token, hash);
+  } else if (token && pc) {
+    await fetchVault(`https://${pc}/vault?t=${encodeURIComponent(token)}`, hash);
   } else {
     renderEntry();
   }

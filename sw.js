@@ -1,4 +1,4 @@
-const CACHE = 'pandora-v3';
+const CACHE = 'pandora-v5';
 const ASSETS = ['./', './index.html', './app.js', './manifest.json'];
 
 self.addEventListener('install', (e) => {
