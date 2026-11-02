@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#141310"/>
+  <text x="256" y="340" font-family="ui-monospace,monospace" font-size="260"
+        font-weight="bold" fill="#a3d18b" text-anchor="middle">P</text>
+</svg>

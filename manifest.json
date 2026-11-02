@@ -1,0 +1,12 @@
+{
+  "name": "Pandora",
+  "short_name": "Pandora",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#141310",
+  "theme_color": "#141310",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

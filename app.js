@@ -1,29 +1,51 @@
 import { argon2id } from 'hash-wasm';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha';
 
-// ---------------------------------------------------------------------------
-// Constants (must match pandora-core/src/vault.rs)
-// ---------------------------------------------------------------------------
 const MAGIC = 'PANDORA1';
-const HEADER_LEN = 60;          // 8 magic + 4 m + 4 t + 4 p + 16 salt + 24 nonce
+const HEADER_LEN = 60;
 const SALT_LEN = 16;
-const NONCE_LEN = 24;
 const MAX_M_COST_KIB = 2 * 1024 * 1024;
 const MAX_T_COST = 50;
 const MAX_P_COST = 16;
+const CACHE_KEY = 'pandora:vault-cache';     // encrypted bytes, base64
+const CACHE_TIME_KEY = 'pandora:vault-cached-at';
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-const state = {
-  vaultBytes: null,   // Uint8Array of the encrypted file
-  vault: null,        // decrypted { entries: [...] }
-};
-
-// ---------------------------------------------------------------------------
-// Small utilities
-// ---------------------------------------------------------------------------
+const state = { vaultBytes: null, vault: null };
 const $ = (sel) => document.querySelector(sel);
+
+function saveVaultToCache(bytes) {
+  try {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    localStorage.setItem(CACHE_KEY, btoa(binary));
+    localStorage.setItem(CACHE_TIME_KEY, String(Date.now()));
+  } catch (e) {
+    console.warn('cache save failed:', e);
+  }
+}
+
+function loadVaultFromCache() {
+  const b64 = localStorage.getItem(CACHE_KEY);
+  if (!b64) return null;
+  try {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function clearVaultCache() {
+  localStorage.removeItem(CACHE_KEY);
+  localStorage.removeItem(CACHE_TIME_KEY);
+}
+
+function cachedAt() {
+  const t = localStorage.getItem(CACHE_TIME_KEY);
+  return t ? new Date(Number(t)) : null;
+}
 
 function toast(msg) {
   const t = $('#toast');
@@ -34,46 +56,24 @@ function toast(msg) {
 }
 
 async function copyText(text, label) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast(`${label} copied`);
-  } catch (e) {
-    toast('copy failed');
-  }
+  try { await navigator.clipboard.writeText(text); toast(label + ' copied'); }
+  catch { toast('copy failed'); }
 }
 
-function fmtDate(unix) {
-  return new Date(unix * 1000).toISOString().slice(0, 10);
-}
+function fmtDate(unix) { return new Date(unix * 1000).toISOString().slice(0, 10); }
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-// ---------------------------------------------------------------------------
-// Vault format
-//   magic(8) | m_cost u32 LE | t_cost u32 LE | p_cost u32 LE
-//   | salt(16) | nonce(24) | ciphertext+tag
-// The 60-byte header is the AEAD associated data.
-// ---------------------------------------------------------------------------
 function parseHeader(bytes) {
-  if (bytes.byteLength < HEADER_LEN + 16) {
-    throw new Error('file is too small to be a Pandora vault');
-  }
+  if (bytes.byteLength < HEADER_LEN + 16) throw new Error('file is too small to be a Pandora vault');
   const magic = new TextDecoder().decode(bytes.subarray(0, 8));
   if (magic !== MAGIC) throw new Error('not a Pandora vault');
-
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const mCost = view.getUint32(8, true);
   const tCost = view.getUint32(12, true);
   const pCost = view.getUint32(16, true);
-
   if (mCost > MAX_M_COST_KIB || tCost > MAX_T_COST || pCost > MAX_P_COST) {
     throw new Error('unreasonable KDF parameters in file');
   }
-
   return {
     mCost, tCost, pCost,
     salt:  bytes.subarray(20, 20 + SALT_LEN),
@@ -85,20 +85,12 @@ function parseHeader(bytes) {
 
 async function decryptVault(bytes, password) {
   const h = parseHeader(bytes);
-
-  // Derive the 32-byte key exactly the same way the Rust app did.
   const pwBytes = new TextEncoder().encode(password);
   const key = await argon2id({
-    password: pwBytes,
-    salt: h.salt,
-    parallelism: h.pCost,
-    iterations: h.tCost,
-    memorySize: h.mCost,     // KiB
-    hashLength: 32,
-    outputType: 'binary',
+    password: pwBytes, salt: h.salt,
+    parallelism: h.pCost, iterations: h.tCost,
+    memorySize: h.mCost, hashLength: 32, outputType: 'binary',
   });
-
-  // XChaCha20-Poly1305 with the header as AAD.
   let plaintext;
   try {
     const cipher = xchacha20poly1305(key, h.nonce, h.header);
@@ -106,33 +98,105 @@ async function decryptVault(bytes, password) {
   } catch {
     throw new Error('wrong master password, or file is corrupted');
   }
-
   const vault = JSON.parse(new TextDecoder().decode(plaintext));
-  if (!vault || !Array.isArray(vault.entries)) {
-    throw new Error('vault is malformed');
-  }
+  if (!vault || !Array.isArray(vault.entries)) throw new Error('vault is malformed');
   return vault;
 }
 
-// ---------------------------------------------------------------------------
-// View 1 — pick the file
-// ---------------------------------------------------------------------------
-function renderPickFile() {
-  $('#app').innerHTML = `
-    <div class="card">
-      <div class="caps">Vault file</div>
-      <input type="file" id="file" accept=".pandora,application/octet-stream">
-      <div class="hint">Pick <code>vault.pandora</code> from your PC. It's already encrypted — safe to transfer via email, AirDrop, cloud drive, whatever.</div>
-      <div id="err" class="err"></div>
-    </div>
-  `;
+async function boot() {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  }
+  const h = new URLSearchParams(window.location.hash.slice(1));
+  const token = h.get('t');
+  const hash  = h.get('h');
+  const pc    = h.get('pc');
+  if (token) {
+    const base = pc ? `https://${pc}` : '';
+    await fetchVault(base + '/vault?t=' + encodeURIComponent(token), hash);
+  } else {
+    renderEntry();
+  }
+}
+
+async function fetchVault(url, expectedHash) {
+  $('#app').innerHTML =
+    '<div class="card"><div class="caps">Fetching from PC</div>' +
+    '<div id="status" class="hint"><span class="spinner"></span> Downloading encrypted vault…</div>' +
+    '<div id="err" class="err"></div></div>';
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('server returned ' + res.status);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (expectedHash) {
+      const digest = await crypto.subtle.digest('SHA-256', buf);
+      const got = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+      if (got !== expectedHash) throw new Error('vault hash mismatch — connection may have been tampered with');
+    }
+    state.vaultBytes = buf;
+    saveVaultToCache(buf);
+    history.replaceState(null, '', window.location.pathname);
+    renderPassword();
+  } catch (e) {
+    $('#status').textContent = 'Failed.';
+    $('#err').textContent = e.message;
+  }
+}
+
+function renderEntry() {
+  const cached = loadVaultFromCache();
+  const when = cachedAt();
+  const whenStr = when ? when.toLocaleString() : '';
+
+  let html = '<div class="card">';
+  if (cached) {
+    html +=
+      '<div class="caps">Cached vault</div>' +
+      '<div class="hint" style="margin-bottom:8px">Last synced from PC: ' + whenStr +
+      ' · ' + cached.length + ' bytes</div>' +
+      '<div class="row" style="margin-bottom:12px">' +
+      '<button class="primary grow" id="use-cache">Open cached vault</button>' +
+      '<button class="ghost" id="drop-cache">Forget</button>' +
+      '</div>' +
+      '<div class="caps" style="margin-top:16px">Sync fresh from PC</div>' +
+      '<div class="hint" style="margin-bottom:8px">On PC: click Share to phone → scan QR.</div>';
+  } else {
+    html += '<div class="caps">No vault yet</div>' +
+      '<div class="hint" style="margin-bottom:12px">On PC: click Share to phone → scan QR. ' +
+      'Or load a .pandora file manually below.</div>';
+  }
+  html +=
+    '<div class="caps" style="margin-top:16px">Or open a file</div>' +
+    '<input type="file" id="file" accept=".pandora,application/octet-stream">' +
+    '<div id="err" class="err"></div>' +
+    '</div>';
+
+  $('#app').innerHTML = html;
+
+  if (cached) {
+    $('#use-cache').onclick = () => {
+      try {
+        parseHeader(cached);
+        state.vaultBytes = cached;
+        renderPassword();
+      } catch (e) {
+        $('#err').textContent = 'cached vault is corrupt: ' + e.message;
+      }
+    };
+    $('#drop-cache').onclick = () => {
+      clearVaultCache();
+      renderEntry();
+    };
+  }
+
   $('#file').addEventListener('change', async (ev) => {
-    const f = ev.target.files?.[0];
+    const f = ev.target.files && ev.target.files[0];
     if (!f) return;
     const buf = new Uint8Array(await f.arrayBuffer());
     try {
-      parseHeader(buf);            // validate before we bother the user for a password
+      parseHeader(buf);
       state.vaultBytes = buf;
+      saveVaultToCache(buf);
       renderPassword();
     } catch (e) {
       $('#err').textContent = e.message;
@@ -140,93 +204,42 @@ function renderPickFile() {
   });
 }
 
-// ---------------------------------------------------------------------------
-// View 2 — master password
-// ---------------------------------------------------------------------------
 function renderPassword() {
-  $('#app').innerHTML = `
-    <div class="card">
-      <div class="caps">Master password</div>
-      <div class="row">
-        <input type="password" id="pw" class="grow" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-        <button class="ghost" id="toggle">SHOW</button>
-      </div>
-      <div class="row" style="margin-top: 8px;">
-        <button class="primary grow" id="unlock">Unlock</button>
-        <button class="ghost" id="back">Change file</button>
-      </div>
-      <div id="err" class="err"></div>
-      <div id="busy" class="hint" style="display:none;">
-        <span class="spinner"></span>Deriving key… this is slow on purpose (10–30 s on a phone)
-      </div>
-    </div>
-  `;
-
-  const pw = $('#pw');
-  const toggle = $('#toggle');
-  const unlock = $('#unlock');
-  const busy = $('#busy');
-  const err = $('#err');
-
+  $('#app').innerHTML =
+    '<div class="card"><div class="caps">Master password</div>' +
+    '<div class="row"><input type="password" id="pw" class="grow" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">' +
+    '<button class="ghost" id="toggle">SHOW</button></div>' +
+    '<div class="row" style="margin-top:8px"><button class="primary grow" id="unlock">Unlock</button>' +
+    '<button class="ghost" id="back">Change file</button></div>' +
+    '<div id="err" class="err"></div>' +
+    '<div id="busy" class="hint" style="display:none"><span class="spinner"></span>Deriving key… 10–30 s on a phone (intentionally slow)</div></div>';
+  const pw = $('#pw'), toggle = $('#toggle'), unlock = $('#unlock'), busy = $('#busy'), err = $('#err');
   setTimeout(() => pw.focus(), 50);
-
-  toggle.onclick = () => {
-    const isPw = pw.type === 'password';
-    pw.type = isPw ? 'text' : 'password';
-    toggle.textContent = isPw ? 'HIDE' : 'SHOW';
-  };
-
+  toggle.onclick = () => { const p = pw.type === 'password'; pw.type = p ? 'text' : 'password'; toggle.textContent = p ? 'HIDE' : 'SHOW'; };
   const go = async () => {
     if (!pw.value) return;
-    err.textContent = '';
-    busy.style.display = 'block';
-    unlock.disabled = true;
-    pw.disabled = true;
-    // Yield to let the spinner paint before Argon2 blocks the main thread.
+    err.textContent = ''; busy.style.display = 'block'; unlock.disabled = true; pw.disabled = true;
     await new Promise(r => setTimeout(r, 30));
     try {
       state.vault = await decryptVault(state.vaultBytes, pw.value);
-      pw.value = '';
-      renderVault();
+      pw.value = ''; renderVault();
     } catch (e) {
-      err.textContent = e.message;
-      busy.style.display = 'none';
-      unlock.disabled = false;
-      pw.disabled = false;
-      pw.focus();
+      err.textContent = e.message; busy.style.display = 'none'; unlock.disabled = false; pw.disabled = false; pw.focus();
     }
   };
-
   unlock.onclick = go;
   pw.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-  $('#back').onclick = () => {
-    state.vaultBytes = null;
-    state.vault = null;
-    renderPickFile();
-  };
+  $('#back').onclick = () => { state.vaultBytes = null; state.vault = null; renderEntry(); };
 }
 
-// ---------------------------------------------------------------------------
-// View 3 — the vault list
-// ---------------------------------------------------------------------------
 function renderVault() {
-  $('#app').innerHTML = `
-    <div class="card">
-      <div class="row">
-        <input type="text" id="search" class="grow" placeholder="search…"
-               autocorrect="off" autocapitalize="off" spellcheck="false">
-        <button class="ghost" id="lock">Lock</button>
-      </div>
-      <div id="list" class="entries" style="margin-top: 12px;"></div>
-      <div class="hint" id="count"></div>
-    </div>
-  `;
+  $('#app').innerHTML =
+    '<div class="card"><div class="row"><input type="text" id="search" class="grow" placeholder="search…" autocorrect="off" autocapitalize="off" spellcheck="false">' +
+    '<button class="ghost" id="lock">Lock</button></div>' +
+    '<div id="list" class="entries" style="margin-top:12px"></div>' +
+    '<div class="hint" id="count"></div></div>';
   $('#search').addEventListener('input', (e) => renderList(e.target.value));
-  $('#lock').onclick = () => {
-    state.vault = null;
-    state.vaultBytes = null;
-    renderPickFile();
-  };
+  $('#lock').onclick = () => { state.vault = null; state.vaultBytes = null; renderEntry(); };
   renderList('');
 }
 
@@ -239,104 +252,60 @@ function renderList(query) {
     (e.username || '').toLowerCase().includes(n) ||
     (e.email    || '').toLowerCase().includes(n) ||
     (e.url      || '').toLowerCase().includes(n)
-  ).sort((a, b) =>
-    (a.label || '').toLowerCase().localeCompare((b.label || '').toLowerCase())
-  );
+  ).sort((a, b) => (a.label || '').toLowerCase().localeCompare((b.label || '').toLowerCase()));
 
-  const list = $('#list');
-  list.innerHTML = '';
-
+  const list = $('#list'); list.innerHTML = '';
   if (entries.length === 0) {
-    list.innerHTML =
-      `<div class="hint" style="text-align:center;padding:20px;">` +
-      (all.length === 0 ? 'NO ENTRIES YET' : 'NO MATCHES') +
-      `</div>`;
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px">' +
+      (all.length === 0 ? 'NO ENTRIES YET' : 'NO MATCHES') + '</div>';
   } else {
     for (const e of entries) {
       const div = document.createElement('div');
       div.className = 'entry';
-      const label = e.label || '(untitled)';
-      const sub = e.username || e.email || '';
-      div.innerHTML = `<div class="label"></div><div class="sub2"></div>`;
-      div.querySelector('.label').textContent = label;
-      div.querySelector('.sub2').textContent = sub;
+      div.innerHTML = '<div class="label"></div><div class="sub2"></div>';
+      div.querySelector('.label').textContent = e.label || '(untitled)';
+      div.querySelector('.sub2').textContent = e.username || e.email || '';
       div.onclick = () => renderDetail(e);
       list.appendChild(div);
     }
   }
-  $('#count').textContent = `${entries.length} of ${all.length} entries`;
+  $('#count').textContent = entries.length + ' of ' + all.length + ' entries';
 }
 
-// ---------------------------------------------------------------------------
-// Detail overlay
-// ---------------------------------------------------------------------------
 function renderDetail(e) {
   const overlay = document.createElement('div');
   overlay.className = 'detail-overlay';
   const close = () => overlay.remove();
   overlay.onclick = (ev) => { if (ev.target === overlay) close(); };
-
-  const title = e.label || '(untitled)';
-  overlay.innerHTML = `
-    <div class="detail">
-      <div class="row" style="margin-bottom: 16px;">
-        <div class="grow" style="font-size: 18px; font-weight: bold;">${escapeHtml(title)}</div>
-        <button class="ghost" id="close">CLOSE</button>
-      </div>
-      <div id="fields"></div>
-      <div class="hint" style="margin-top: 16px;">
-        CREATED ${fmtDate(e.created)} · MODIFIED ${fmtDate(e.modified)}
-      </div>
-    </div>
-  `;
+  overlay.innerHTML =
+    '<div class="detail"><div class="row" style="margin-bottom:16px">' +
+    '<div class="grow" style="font-size:18px;font-weight:bold">' + escapeHtml(e.label || '(untitled)') + '</div>' +
+    '<button class="ghost" id="close">CLOSE</button></div>' +
+    '<div id="fields"></div>' +
+    '<div class="hint" style="margin-top:16px">CREATED ' + fmtDate(e.created) + ' · MODIFIED ' + fmtDate(e.modified) + '</div></div>';
   overlay.querySelector('#close').onclick = close;
-
   const fields = overlay.querySelector('#fields');
-
   const addField = (label, value, mask) => {
     if (!value) return;
     const div = document.createElement('div');
     div.className = 'field';
-
-    const lbl = document.createElement('div');
-    lbl.className = 'lbl';
-    lbl.textContent = label.toUpperCase();
-
-    const val = document.createElement('div');
-    val.className = 'val';
-
-    const hint = document.createElement('div');
-    hint.className = 'copy-hint';
-    hint.textContent = 'TAP TO COPY';
-
+    const lbl = document.createElement('div'); lbl.className = 'lbl'; lbl.textContent = label.toUpperCase();
+    const val = document.createElement('div'); val.className = 'val';
+    const hint = document.createElement('div'); hint.className = 'copy-hint'; hint.textContent = 'TAP TO COPY';
     let revealed = false;
     const masked = '•'.repeat(Math.min(value.length, 24));
     val.textContent = mask ? masked : value;
-
-    div.appendChild(lbl);
-    div.appendChild(val);
-    div.appendChild(hint);
-
+    div.appendChild(lbl); div.appendChild(val); div.appendChild(hint);
     if (mask) {
       const eye = document.createElement('button');
-      eye.className = 'ghost';
-      eye.textContent = 'SHOW';
-      eye.style.position = 'absolute';
-      eye.style.bottom = '6px';
-      eye.style.right = '6px';
-      eye.onclick = (ev) => {
-        ev.stopPropagation();
-        revealed = !revealed;
-        val.textContent = revealed ? value : masked;
-        eye.textContent = revealed ? 'HIDE' : 'SHOW';
-      };
+      eye.className = 'ghost'; eye.textContent = 'SHOW';
+      eye.style.position = 'absolute'; eye.style.bottom = '6px'; eye.style.right = '6px';
+      eye.onclick = (ev) => { ev.stopPropagation(); revealed = !revealed; val.textContent = revealed ? value : masked; eye.textContent = revealed ? 'HIDE' : 'SHOW'; };
       div.appendChild(eye);
     }
-
     div.onclick = () => copyText(value, label);
     fields.appendChild(div);
   };
-
   addField('password', e.password, true);
   addField('username', e.username, false);
   addField('email', e.email, false);
@@ -348,11 +317,7 @@ function renderDetail(e) {
     }
   }
   addField('notes', e.notes, false);
-
   document.body.appendChild(overlay);
 }
 
-// ---------------------------------------------------------------------------
-// Boot
-// ---------------------------------------------------------------------------
-renderPickFile();
+boot();
