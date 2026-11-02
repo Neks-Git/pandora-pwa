@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141310">
+<title>Pandora</title>
+<style>
+  :root {
+    --bg: #141310;
+    --card: #211e16;
+    --card2: #2a261b;
+    --card-hover: #332e21;
+    --border: #3a3626;
+    --accent: #a3d18b;
+    --accent-dim: #5d784f;
+    --text: #e9e4d3;
+    --muted: #9a9480;
+    --faint: #6d6853;
+    --danger: #e5534b;
+    --warn: #f0a030;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    min-height: 100vh;
+    padding: max(16px, env(safe-area-inset-top))
+             max(16px, env(safe-area-inset-right))
+             max(16px, env(safe-area-inset-bottom))
+             max(16px, env(safe-area-inset-left));
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; letter-spacing: 1px; }
+  .sub { font-size: 10px; color: var(--faint); letter-spacing: 2px; margin-bottom: 20px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 12px;
+  }
+  .caps { font-size: 10px; color: var(--faint); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
+  input, button { font-family: inherit; font-size: 14px; }
+  input[type=password], input[type=text] {
+    width: 100%; background: #17150f; border: 1px solid var(--border);
+    color: var(--text); padding: 10px 12px; border-radius: 6px; outline: none;
+  }
+  input:focus { border-color: var(--accent-dim); }
+  input[type=file] {
+    width: 100%; background: #17150f; border: 1px solid var(--border);
+    color: var(--text); padding: 10px 12px; border-radius: 6px;
+  }
+  button {
+    background: var(--card2); border: 1px solid var(--border);
+    color: var(--text); padding: 10px 16px; border-radius: 6px;
+    cursor: pointer; transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: var(--card-hover); border-color: var(--accent-dim); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: bold; }
+  button.primary:hover { background: #b8e0a3; }
+  button.ghost { background: transparent; border: none; color: var(--muted); padding: 4px 8px; font-size: 11px; }
+  button.ghost:hover { color: var(--accent); background: transparent; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row > .grow { flex: 1; min-width: 0; }
+  .err { color: var(--danger); font-size: 12px; margin-top: 8px; min-height: 1em; }
+  .hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 8px; }
+  .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid var(--faint); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    vertical-align: middle; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .entries { display: flex; flex-direction: column; gap: 4px; max-height: 65vh; overflow-y: auto; }
+  .entry {
+    background: var(--card2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px; cursor: pointer;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .entry:hover { background: var(--card-hover); border-color: var(--accent-dim); }
+  .entry .label { font-size: 14px; color: var(--text); }
+  .entry .sub2 {
+    font-size: 11px; color: var(--muted); margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .detail-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px; z-index: 100;
+  }
+  .detail {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px;
+    max-width: 640px; width: 100%; max-height: 90vh; overflow-y: auto;
+  }
+  .field {
+    background: var(--card2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 12px; margin-bottom: 8px;
+    cursor: pointer; position: relative;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .field:hover { background: var(--card-hover); border-color: var(--accent-dim); }
+  .field .lbl {
+    font-size: 9px; color: var(--faint); letter-spacing: 1px;
+    text-transform: uppercase; margin-bottom: 4px;
+  }
+  .field .val { font-size: 14px; color: var(--text); word-break: break-all; padding-right: 80px; }
+  .field .copy-hint {
+    position: absolute; top: 8px; right: 10px;
+    font-size: 9px; color: var(--accent); opacity: 0; transition: opacity 0.15s;
+  }
+  .field:hover .copy-hint { opacity: 1; }
+
+  .toast {
+    position: fixed; bottom: max(20px, env(safe-area-inset-bottom));
+    left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: var(--bg);
+    padding: 10px 20px; border-radius: 6px;
+    font-size: 12px; font-weight: bold; z-index: 200;
+    opacity: 0; transition: opacity 0.2s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>P.A.N.D.O.R.A</h1>
+  <div class="sub">ENCRYPTED VAULT · MOBILE</div>
+  <div id="app"></div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "hash-wasm": "https://cdn.jsdelivr.net/npm/hash-wasm@4.12.0/+esm",
+    "@noble/ciphers/chacha": "https://cdn.jsdelivr.net/npm/@noble/ciphers@1.1.3/chacha.js/+esm"
+  }
+}
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
