@@ -115,7 +115,8 @@ async function decryptVault(bytes, password) {
   return vault;
 }
 async function fetchVaultFromRelay(id, token, expectedHash) {
-  const relayBase = document.querySelector('meta[name="pandora-relay"]')?.content || '';
+  const relayBaseRaw = document.querySelector('meta[name="pandora-relay"]')?.content || '';
+  const relayBase = relayBaseRaw.replace(/\/+$/, '');
   if (!relayBase) {
     $('#app').innerHTML = '<div class="card"><div class="err">This PWA has no relay configured. Set the meta tag in index.html.</div></div>';
     return;
