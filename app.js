@@ -24,6 +24,18 @@ function saveVaultToCache(bytes) {
   }
 }
 
+function downloadVaultFile(bytes) {
+  const blob = new Blob([bytes], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'vault.pandora';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('vault.pandora downloaded');
+}
 function loadVaultFromCache() {
   const b64 = localStorage.getItem(CACHE_KEY);
   if (!b64) return null;
@@ -187,12 +199,16 @@ function renderEntry() {
       '<div class="caps">Cached vault</div>' +
       '<div class="hint" style="margin-bottom:8px">Last synced from PC: ' + whenStr +
       ' · ' + cached.length + ' bytes</div>' +
-      '<div class="row" style="margin-bottom:12px">' +
+      '<div class="row" style="margin-bottom:8px">' +
       '<button class="primary grow" id="use-cache">Open cached vault</button>' +
+      '</div>' +
+      '<div class="row" style="margin-bottom:12px">' +
+      '<button class="ghost grow" id="download-cache">Download .pandora file</button>' +
       '<button class="ghost" id="drop-cache">Forget</button>' +
       '</div>' +
       '<div class="caps" style="margin-top:16px">Sync fresh from PC</div>' +
       '<div class="hint" style="margin-bottom:8px">On PC: click Share to phone → scan QR.</div>';
+  
   } else {
     html += '<div class="caps">No vault yet</div>' +
       '<div class="hint" style="margin-bottom:12px">On PC: click Share to phone → scan QR. ' +
@@ -216,6 +232,7 @@ function renderEntry() {
         $('#err').textContent = 'cached vault is corrupt: ' + e.message;
       }
     };
+    $('#download-cache').onclick = () => downloadVaultFile(cached);
     $('#drop-cache').onclick = () => {
       clearVaultCache();
       renderEntry();
