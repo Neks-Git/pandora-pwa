@@ -125,15 +125,22 @@ async function fetchVaultFromRelay(id, token, expectedHash) {
     '<div class="card"><div class="caps">Fetching vault</div>' +
     '<div id="status" class="hint"><span class="spinner"></span> Downloading encrypted vault…</div>' +
     '<div id="err" class="err"></div></div>';
+
+  let buf = null;
   try {
-    const res = await fetch(relayBase + '/fetch/' + encodeURIComponent(id), {
+    const url = relayBase + '/fetch/' + encodeURIComponent(id);
+    console.log('[pandora] fetching', url);
+    const res = await fetch(url, {
       headers: { 'X-Pandora-Token': token },
     });
+    console.log('[pandora] fetch status', res.status);
     if (!res.ok) throw new Error('relay returned ' + res.status);
-    const buf = new Uint8Array(await res.arrayBuffer());
+    buf = new Uint8Array(await res.arrayBuffer());
+    console.log('[pandora] got bytes', buf.length);
     if (expectedHash) {
       const digest = await crypto.subtle.digest('SHA-256', buf);
       const got = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+      console.log('[pandora] hash match?', got === expectedHash);
       if (got !== expectedHash) throw new Error('vault hash mismatch — connection may have been tampered with');
     }
     state.vaultBytes = buf;
@@ -141,8 +148,26 @@ async function fetchVaultFromRelay(id, token, expectedHash) {
     history.replaceState(null, '', window.location.pathname);
     renderPassword();
   } catch (e) {
-    $('#status').textContent = 'Failed.';
-    $('#err').textContent = e.message;
+    const diag = [
+      'ERROR: ' + (e && e.message ? e.message : String(e)),
+      'NAME: ' + (e && e.name ? e.name : '(none)'),
+      'STACK: ' + (e && e.stack ? String(e.stack).slice(0, 400) : '(none)'),
+      'FETCHED_BYTES: ' + (buf ? buf.length : 'null'),
+      'VAULT_BYTES: ' + (state.vaultBytes ? state.vaultBytes.length : 'null'),
+      'RELAY: ' + relayBase,
+      'ID: ' + id,
+      'URL_FRAG: ' + window.location.hash.slice(0, 80),
+    ].join('\n');
+    console.error('[pandora] fetch failed', e, diag);
+    const status = $('#status');
+    const err = $('#err');
+    if (status) status.textContent = 'Failed.';
+    if (err) {
+      err.style.whiteSpace = 'pre-wrap';
+      err.style.fontSize = '10px';
+      err.style.fontFamily = 'monospace';
+      err.textContent = diag;
+    }
   }
 }
 async function boot() {
